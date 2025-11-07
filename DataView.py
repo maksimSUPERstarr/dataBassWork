@@ -2,7 +2,7 @@ import logging
 from PyQt6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QTableWidget,
                              QTableWidgetItem, QHeaderView, QPushButton, QMessageBox)
 from PyQt6.QtCore import Qt
-from database import get_all_experiments
+from database import get_all_experiments_with_joins
 
 # Настройка логирования для этого модуля
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ class DataViewWindow(QMainWindow):
 
     def load_data(self):
         try:
-            experiments = get_all_experiments()
+            experiments = get_all_experiments_with_joins()
 
             # Настраиваем таблицу
             self.table.setRowCount(len(experiments))
