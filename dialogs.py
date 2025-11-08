@@ -13,11 +13,13 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple, Literal
 
+from psycopg2.extras import Json
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout,
     QPushButton, QLabel, QLineEdit, QComboBox, QSpinBox, QTabWidget, QMessageBox,
-    QCheckBox
+    QCheckBox, QDoubleSpinBox, QTextEdit, QDateEdit, QDateTimeEdit
 )
 
 from database import AlterAction, alter_table, SelectParams, execute_select, apply_string_func
@@ -163,19 +165,44 @@ class SchemaEditorDialog(_BaseModalDialog):
         self.tabs.addTab(w, "Столбцы")
 
     # ---- Вкладка «Типы»
+    # ---- Вкладка «Типы»
     def _build_tab_types(self):
         w = QWidget()
         f = QFormLayout(w)
 
+        # Имя таблицы
         self.table_name_types = QLineEdit()
+        self.table_name_types.setPlaceholderText("Имя таблицы (например, users)")
         f.addRow("Таблица:", self.table_name_types)
 
+        # Имя столбца
         self.type_col = QLineEdit()
-        self.type_new = QLineEdit()
+        self.type_col.setPlaceholderText("Имя столбца (например, age)")
+
+        # Предустановленный список допустимых типов
+        self.type_new = QComboBox()
+        self.type_new.addItems([
+            "INTEGER",
+            "BIGINT",
+            "SMALLINT",
+            "SERIAL",
+            "REAL",
+            "DOUBLE PRECISION",
+            "NUMERIC(10,2)",
+            "BOOLEAN",
+            "TEXT",
+            "VARCHAR(100)",
+            "DATE",
+            "TIMESTAMP",
+            "JSONB"
+        ])
+
+        # Компоновка строки «col → type»
         trow = QHBoxLayout()
         trow.addWidget(self.type_col)
         trow.addWidget(self.type_new)
-        twrap = QWidget(); twrap.setLayout(trow)
+        twrap = QWidget()
+        twrap.setLayout(trow)
         f.addRow("Изменить тип (col → type):", twrap)
 
         self.tabs.addTab(w, "Типы")
@@ -264,10 +291,10 @@ class SchemaEditorDialog(_BaseModalDialog):
 
             # Типы
             t2 = self.table_name_types.text().strip()
-            if t2 and self.type_col.text().strip() and self.type_new.text().strip():
+            if t2 and self.type_col.text().strip() and self.type_new.currentText().strip():
                 actions.append(AlterAction(kind="alter_type", table=t2,
                                            column=self.type_col.text().strip(),
-                                           data_type=self.type_new.text().strip()))
+                                           data_type=self.type_new.currentText().strip()))
 
             # Ограничения
             t3 = self.table_name_cons.text().strip()
@@ -810,6 +837,217 @@ class StringFuncsDialog(_BaseModalDialog):
         finally:
             conn.close()
 
+class InsertRowDialog(_BaseModalDialog):
+    """
+    Добавление одной записи в выбранную таблицу.
+    Поля строятся динамически по структуре таблицы (get_columns).
+    """
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__("Добавить запись", parent)
+        self._cols_meta: List[Dict[str, Any]] = []
+        self._editors: Dict[str, QWidget] = {}
+        self._null_flags: Dict[str, QCheckBox] = {}
+        self.table_name: Optional[str] = None
+        self._setup_ui()
+
+    def _setup_ui(self):
+        root = QVBoxLayout(self)
+
+        title = QLabel("Добавление записи")
+        title.setStyleSheet("font-style: italic; font-size: 14pt;")
+        root.addWidget(title)
+
+        form = QFormLayout()
+        self.table_edit = QLineEdit()
+        self.table_edit.setPlaceholderText("Имя таблицы (например: users)")
+        form.addRow("Таблица:", self.table_edit)
+
+        # Кнопка «Загрузить поля»
+        load_row = QHBoxLayout()
+        self.load_btn = QPushButton("Загрузить поля")
+        self.load_btn.setStyleSheet(SMALL_BTNS_STYLE)
+        self.load_btn.clicked.connect(self._on_load_fields)
+        load_row.addStretch(1); load_row.addWidget(self.load_btn)
+        lw = QWidget(); lw.setLayout(load_row)
+        form.addRow("", lw)
+
+        # Контейнер с динамическими редакторами
+        self.fields_wrap = QWidget()
+        self.fields_layout = QFormLayout(self.fields_wrap)
+        form.addRow("Поля:", self.fields_wrap)
+
+        root.addLayout(form)
+
+        # Нижние кнопки
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        self.save_btn = QPushButton("Сохранить")
+        self.save_btn.setStyleSheet(SMALL_BTNS_STYLE)
+        self.save_btn.clicked.connect(self._on_save)
+        self.cancel_btn = QPushButton("Отмена")
+        self.cancel_btn.setStyleSheet(SMALL_BTNS_STYLE)
+        self.cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(self.save_btn); btns.addWidget(self.cancel_btn)
+        root.addLayout(btns)
+
+    # ---- helpers
+
+    @staticmethod
+    def _editor_for_type(pg_type: str) -> QWidget:
+        t = pg_type.lower()
+        # Числа
+        if any(x in t for x in ["int", "serial", "smallint", "bigint"]):
+            w = QSpinBox(); w.setMinimum(-2_147_483_648); w.setMaximum(2_147_483_647); return w
+        if any(x in t for x in ["numeric", "real", "double"]):
+            w = QDoubleSpinBox(); w.setDecimals(6); w.setMinimum(-1e12); w.setMaximum(1e12); return w
+        # Булево
+        if "bool" in t:
+            cb = QComboBox(); cb.addItems(["FALSE", "TRUE"]); return cb
+        # Дата/время
+        if t.startswith("timestamp"):
+            dt = QDateTimeEdit()
+            dt.setCalendarPopup(True)
+            dt.setDateTime(QDateTime.currentDateTime())
+            return dt
+        if t == "date":
+            d = QDateEdit()
+            d.setCalendarPopup(True)
+            d.setDate(QDate().currentDate())
+            return d
+        # JSONB и текстовые — multiline
+        if "json" in t:
+            te = QTextEdit(); te.setPlaceholderText('JSON, напр. {"k": "v"}'); return te
+        # Текст
+        le = QLineEdit(); return le
+
+    def _on_load_fields(self):
+        tbl = self.table_edit.text().strip()
+        if not tbl:
+            QMessageBox.warning(self, "Таблица", "Укажите имя таблицы.")
+            return
+
+        from database import get_connection, get_columns
+        conn = get_connection()
+        try:
+            self._cols_meta = get_columns(conn, tbl, schema="public")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"{e}")
+            conn.close()
+            return
+
+        self.table_name = tbl
+        # Очистим старые редакторы
+        while self.fields_layout.rowCount():
+            self.fields_layout.removeRow(0)
+        self._editors.clear()
+        self._null_flags.clear()
+
+        # Строим редакторы по колонкам
+        for col in self._cols_meta:
+            name = col["column_name"]
+            dtype = col["data_type"]
+            default = col.get("column_default")
+            nullable = bool(col.get("nullable", True))
+
+            # Пропустим явные serial/identity, если есть дефолт
+            if default and ("nextval" in str(default) or "identity" in str(default).lower()):
+                continue
+
+            editor = self._editor_for_type(dtype)
+            null_cb = QCheckBox("NULL/DEFAULT")
+            self._editors[name] = editor
+            self._null_flags[name] = null_cb
+
+            row = QHBoxLayout()
+            row.addWidget(editor, 3)
+            row.addWidget(null_cb, 1)
+            wrap = QWidget(); wrap.setLayout(row)
+            label = f"{name} : {dtype}" + (" (NULL ok)" if nullable else " (NOT NULL)")
+            self.fields_layout.addRow(label, wrap)
+
+        if not self._editors:
+            QMessageBox.information(self, "Поля", "Нет редактируемых полей (все авто).")
+        conn.close()
+
+    def _collect_values(self) -> Tuple[List[str], List[Any]]:
+        cols: List[str] = []
+        vals: List[Any] = []
+
+        for name, editor in self._editors.items():
+            # если пользователь отметил "NULL/DEFAULT"
+            if self._null_flags[name].isChecked():
+                cols.append(name)
+                vals.append(None)
+                continue
+
+            # Считываем по типу виджета
+            if isinstance(editor, QSpinBox):
+                value = int(editor.value())
+            elif isinstance(editor, QDoubleSpinBox):
+                value = float(editor.value())
+            elif isinstance(editor, QComboBox):  # для BOOLEAN
+                value = True if editor.currentText().upper() == "TRUE" else False
+            elif isinstance(editor, QDateTimeEdit):
+                # отдадим как строку в SQL-формате timestamp
+                value = editor.dateTime().toString("yyyy-MM-dd HH:mm:ss")
+            elif isinstance(editor, QDateEdit):
+                value = editor.date().toString("yyyy-MM-dd")
+            elif isinstance(editor, QTextEdit):
+                value = editor.toPlainText().strip()
+            elif isinstance(editor, QLineEdit):
+                value = editor.text().strip()
+            else:
+                value = None
+
+            # Пустая строка → NULL
+            if value == "":
+                value = None
+
+            # Если поле похоже на JSON — обернём, чтобы адаптер отдал корректно
+            # (это безопасно: Json(None) → NULL)
+            col_meta = next((c for c in self._cols_meta if c["column_name"] == name), None)
+            if col_meta and isinstance(value, str):
+                dt = str(col_meta.get("data_type", "")).lower()
+                if "json" in dt:
+                    try:
+                        import json
+                        parsed = json.loads(value)  # валидируем JSON
+                        value = Json(parsed)
+                    except Exception:
+                        # если невалидный JSON — оставим как есть, пусть БД вернёт ошибку
+                        pass
+
+            cols.append(name)
+            vals.append(value)
+
+        return cols, vals
+
+    def _on_save(self):
+        if not self.table_name:
+            QMessageBox.warning(self, "Таблица", "Сначала загрузите поля таблицы.")
+            return
+
+        cols, vals = self._collect_values()
+        if not cols:
+            QMessageBox.warning(self, "Данные", "Не указано ни одного значения.")
+            return
+
+        placeholders = ", ".join(["%s"] * len(cols))
+        col_list = ", ".join(cols)
+        q = f'INSERT INTO {self.table_name} ({col_list}) VALUES ({placeholders}) RETURNING 1'
+
+        from database import get_connection, safe_execute
+        conn = get_connection()
+        try:
+            safe_execute(conn, q, vals)
+            QMessageBox.information(self, "Готово", "Запись добавлена.")
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"{e}")
+        finally:
+            conn.close()
+
 
 # ---------------- exports ----------------
 
@@ -818,4 +1056,5 @@ __all__ = [
     "SelectBuilderDialog",
     "SearchDialog",
     "StringFuncsDialog",
+    "InsertRowDialog",
 ]

@@ -22,7 +22,7 @@ from database import (
     get_connection, preview_table, execute_select, SelectParams, safe_execute
 )
 from dialogs import (
-    SchemaEditorDialog, SelectBuilderDialog, SearchDialog, StringFuncsDialog
+    SchemaEditorDialog, SelectBuilderDialog, SearchDialog, StringFuncsDialog, InsertRowDialog
 )
 "константы для удобства"
 APP_BG = "#FAFAFA"
@@ -107,6 +107,7 @@ class MainWindow(QMainWindow):
         self.btn_strings = QPushButton("Строковые функции")
         self.btn_search = QPushButton("Поиск")
         self.btn_exit = QPushButton("Выход")
+        self.btn_insert = QPushButton("Добавить запись")
 
         # делаем кнопки тянущимися по ширине
         for b in (self.btn_create, self.btn_schema, self.btn_select,
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
             self.btn_create, self.btn_schema,
             self.btn_select, self.btn_strings,
             self.btn_search, self.btn_exit,
+            self.btn_insert
         ]
         row = col = 0
         for b in buttons:
@@ -144,6 +146,7 @@ class MainWindow(QMainWindow):
         self.btn_strings.clicked.connect(self.on_string_funcs)
         self.btn_search.clicked.connect(self.on_search)
         self.btn_exit.clicked.connect(self.close)
+        self.btn_insert.clicked.connect(self.on_insert_row)
 
     def _show_rows(self, rows: List[Dict[str, Any]]):
         self._last_rows = rows
@@ -217,6 +220,23 @@ class MainWindow(QMainWindow):
 
     def on_apply_commit(self):
         QMessageBox.information(self, "Транзакция", "Изменения применяются автоматически после операций.")
+
+    def on_insert_row(self):
+        dlg = InsertRowDialog(self)
+        if dlg.exec():
+            # если пользователь добавлял запись — покажем актуальную таблицу
+            tbl = dlg.table_name
+            if tbl:
+                try:
+                    conn = get_connection()
+                    try:
+                        rows = preview_table(conn, tbl, limit=200)
+                        self._show_rows(rows)
+                        self.status.showMessage(f"Добавлена запись в {tbl}", 4000)
+                    finally:
+                        conn.close()
+                except Exception as e:
+                    QMessageBox.critical(self, "Ошибка", str(e))
 
     def on_apply_rollback(self):
         QMessageBox.information(self, "Транзакция", "Откат возможен для явных транзакций. В текущем режиме операции атомарны.")
