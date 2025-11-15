@@ -14,7 +14,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple, Literal
 
 from psycopg2.extras import Json
-
+from PyQt6.QtCore import QDateTime, QDate
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout,
@@ -122,46 +122,47 @@ class SchemaEditorDialog(_BaseModalDialog):
         w = QWidget()
         f = QFormLayout(w)
 
-        self.table_name_col = QLineEdit()
-        f.addRow("Таблица:", self.table_name_col)
+        self.columns_edit = QLineEdit()
+        self.columns_edit.setPlaceholderText("Например: e.id, e.name, m.score или *")
+        f.addRow("Столбцы:", self.columns_edit)
 
-        # Добавить столбец
+        self.tabs.addTab(w, "Столбцы")
+
+        self.table_name_cols = QLineEdit()
+        self.table_name_cols.setPlaceholderText("Имя таблицы (например: users)")
+        f.addRow("Таблица:", self.table_name_cols)
+
+        # Имя нового столбца
         self.add_col_name = QLineEdit()
-        self.add_col_type = QLineEdit()
-        add_row = QHBoxLayout()
-        add_row.addWidget(self.add_col_name)
-        add_row.addWidget(self.add_col_type)
-        add_wrap = QWidget(); add_wrap.setLayout(add_row)
-        f.addRow("Добавить столбец (name, type):", add_wrap)
+        self.add_col_name.setPlaceholderText("Имя столбца")
 
-        # Удалить столбец
-        self.drop_col_name = QLineEdit()
-        self.drop_col_cascade = QCheckBox("CASCADE")
-        drop_row = QHBoxLayout()
-        drop_row.addWidget(self.drop_col_name)
-        drop_row.addWidget(self.drop_col_cascade)
-        drop_wrap = QWidget(); drop_wrap.setLayout(drop_row)
-        f.addRow("Удалить столбец:", drop_wrap)
+        # Тип нового столбца — выпадающий список, как у NOT NULL
+        self.add_col_type = QComboBox()
+        self.add_col_type.addItems([
+            "INTEGER",
+            "BIGINT",
+            "SMALLINT",
+            "SERIAL",
+            "REAL",
+            "DOUBLE PRECISION",
+            "NUMERIC(10,2)",
+            "BOOLEAN",
+            "TEXT",
+            "VARCHAR(100)",
+            "DATE",
+            "TIMESTAMP",
+            "JSONB"
+        ])
 
-        # Переименовать столбец
-        self.ren_col_old = QLineEdit()
-        self.ren_col_new = QLineEdit()
-        ren_row = QHBoxLayout()
-        ren_row.addWidget(self.ren_col_old)
-        ren_row.addWidget(self.ren_col_new)
-        ren_wrap = QWidget(); ren_wrap.setLayout(ren_row)
-        f.addRow("Переименовать столбец (old → new):", ren_wrap)
+        trow = QHBoxLayout()
+        trow.addWidget(self.add_col_name)
+        trow.addWidget(self.add_col_type)
+        twrap = QWidget()
+        twrap.setLayout(trow)
+        f.addRow("Добавить столбец (name, type):", twrap)
 
-        # NOT NULL toggle
-        self.nn_col = QLineEdit()
-        self.nn_mode = QComboBox()
-        self.nn_mode.addItems(["SET NOT NULL", "DROP NOT NULL"])
-        nn_row = QHBoxLayout()
-        nn_row.addWidget(self.nn_col)
-        nn_row.addWidget(self.nn_mode)
-        nn_wrap = QWidget(); nn_wrap.setLayout(nn_row)
-        f.addRow("NOT NULL для столбца:", nn_wrap)
-
+        # дальше оставляешь как было: удалить столбец, переименовать, NOT NULL и т.д.
+        ...
         self.tabs.addTab(w, "Столбцы")
 
     # ---- Вкладка «Типы»
@@ -264,70 +265,127 @@ class SchemaEditorDialog(_BaseModalDialog):
         self.tabs.addTab(w, "Внешние ключи")
 
     # ---- Применение изменений (одной транзакцией)
+    # ---- Применение изменений (одной транзакцией)
     def apply_changes(self):
         try:
             actions: List[AlterAction] = []
 
-            # Столбцы
-            t = self.table_name_col.text().strip()
+            # ----- Вкладка «Столбцы»
+            t = self.table_name_cols.text().strip()
             if t:
-                if self.add_col_name.text().strip() and self.add_col_type.text().strip():
-                    actions.append(AlterAction(kind="add_column", table=t,
-                                               column=self.add_col_name.text().strip(),
-                                               data_type=self.add_col_type.text().strip()))
-                if self.drop_col_name.text().strip():
-                    actions.append(AlterAction(kind="drop_column", table=t,
-                                               column=self.drop_col_name.text().strip(),
-                                               cascade=self.drop_col_cascade.isChecked()))
-                if self.ren_col_old.text().strip() and self.ren_col_new.text().strip():
-                    actions.append(AlterAction(kind="rename_column", table=t,
-                                               column=self.ren_col_old.text().strip(),
-                                               new_name=self.ren_col_new.text().strip()))
-                if self.nn_col.text().strip():
-                    if self.nn_mode.currentText().startswith("SET"):
-                        actions.append(AlterAction(kind="set_not_null", table=t, column=self.nn_col.text().strip()))
-                    else:
-                        actions.append(AlterAction(kind="drop_not_null", table=t, column=self.nn_col.text().strip()))
+                # Добавить столбец
+                if self.add_col_name.text().strip():
+                    actions.append(
+                        AlterAction(
+                            kind="add_column",
+                            table=t,
+                            column=self.add_col_name.text().strip(),
+                            data_type=self.add_col_type.currentText().strip(),
+                        )
+                    )
 
-            # Типы
+                # Удалить столбец
+                if self.drop_col.text().strip():
+                    actions.append(
+                        AlterAction(
+                            kind="drop_column",
+                            table=t,
+                            column=self.drop_col.text().strip(),
+                            cascade=self.drop_cascade.isChecked(),
+                        )
+                    )
+
+                # Переименовать столбец
+                if self.rename_col_old.text().strip() and self.rename_col_new.text().strip():
+                    actions.append(
+                        AlterAction(
+                            kind="rename_column",
+                            table=t,
+                            column=self.rename_col_old.text().strip(),
+                            new_name=self.rename_col_new.text().strip(),
+                        )
+                    )
+
+                # NOT NULL / DROP NOT NULL
+                if self.notnull_col.text().strip():
+                    col = self.notnull_col.text().strip()
+                    if self.notnull_mode.currentText().startswith("SET"):
+                        actions.append(
+                            AlterAction(kind="set_not_null", table=t, column=col)
+                        )
+                    else:
+                        actions.append(
+                            AlterAction(kind="drop_not_null", table=t, column=col)
+                        )
+
+            # ----- Вкладка «Типы»
             t2 = self.table_name_types.text().strip()
             if t2 and self.type_col.text().strip() and self.type_new.currentText().strip():
-                actions.append(AlterAction(kind="alter_type", table=t2,
-                                           column=self.type_col.text().strip(),
-                                           data_type=self.type_new.currentText().strip()))
+                actions.append(
+                    AlterAction(
+                        kind="alter_type",
+                        table=t2,
+                        column=self.type_col.text().strip(),
+                        data_type=self.type_new.currentText().strip(),
+                    )
+                )
 
-            # Ограничения
+            # ----- Вкладка «Ограничения»
             t3 = self.table_name_cons.text().strip()
             if t3:
                 if self.uniq_col.text().strip():
-                    actions.append(AlterAction(kind="add_unique", table=t3,
-                                               column=self.uniq_col.text().strip(),
-                                               constraint_name=(self.uniq_name.text().strip() or None)))
+                    actions.append(
+                        AlterAction(
+                            kind="add_unique",
+                            table=t3,
+                            column=self.uniq_col.text().strip(),
+                            constraint_name=(self.uniq_name.text().strip() or None),
+                        )
+                    )
                 if self.check_expr.text().strip():
-                    actions.append(AlterAction(kind="add_check", table=t3,
-                                               check_expr=self.check_expr.text().strip(),
-                                               constraint_name=(self.check_name.text().strip() or None)))
+                    actions.append(
+                        AlterAction(
+                            kind="add_check",
+                            table=t3,
+                            check_expr=self.check_expr.text().strip(),
+                            constraint_name=(self.check_name.text().strip() or None),
+                        )
+                    )
                 if self.drop_con_name.text().strip():
-                    actions.append(AlterAction(kind="drop_constraint", table=t3,
-                                               constraint_name=self.drop_con_name.text().strip()))
+                    actions.append(
+                        AlterAction(
+                            kind="drop_constraint",
+                            table=t3,
+                            constraint_name=self.drop_con_name.text().strip(),
+                        )
+                    )
 
-            # Внешние ключи
+            # ----- Вкладка «Внешние ключи»
             t4 = self.table_name_fk.text().strip()
             if t4 and self.fk_col.text().strip() and self.fk_ref_table.text().strip() and self.fk_ref_col.text().strip():
-                actions.append(AlterAction(kind="add_foreign_key", table=t4,
-                                           column=self.fk_col.text().strip(),
-                                           ref_table=self.fk_ref_table.text().strip(),
-                                           ref_column=self.fk_ref_col.text().strip(),
-                                           constraint_name=(self.fk_name.text().strip() or None)))
+                actions.append(
+                    AlterAction(
+                        kind="add_foreign_key",
+                        table=t4,
+                        column=self.fk_col.text().strip(),
+                        ref_table=self.fk_ref_table.text().strip(),
+                        ref_column=self.fk_ref_col.text().strip(),
+                        constraint_name=(self.fk_name.text().strip() or None),
+                    )
+                )
             if t4 and self.drop_fk_name.text().strip():
-                actions.append(AlterAction(kind="drop_constraint", table=t4,
-                                           constraint_name=self.drop_fk_name.text().strip()))
+                actions.append(
+                    AlterAction(
+                        kind="drop_constraint",
+                        table=t4,
+                        constraint_name=self.drop_fk_name.text().strip(),
+                    )
+                )
 
             if not actions:
                 QMessageBox.information(self, "Нет изменений", "Не указано ни одного действия.")
                 return
 
-            # Выполняем одной транзакцией
             from database import get_connection
             conn = get_connection()
             try:
@@ -339,7 +397,7 @@ class SchemaEditorDialog(_BaseModalDialog):
 
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"{e}")
-# ---------------- SelectBuilderDialog ----------------
+
 
 class SelectBuilderDialog(_BaseModalDialog):
     """
@@ -444,14 +502,85 @@ class SelectBuilderDialog(_BaseModalDialog):
         QMessageBox.information(self, "JOIN", "Список JOIN-ов очищен.")
 
     # ---- Столбцы
+    # ---- Вкладка «Столбцы»
     def _build_tab_columns(self):
         w = QWidget()
-        lay = QFormLayout(w)
+        f = QFormLayout(w)
 
-        # Явный список столбцов или выражений: "e.id, e.name, COUNT(m.id) AS cnt"
-        self.columns_edit = QLineEdit()
-        self.columns_edit.setPlaceholderText("Например: e.id, e.name, COUNT(m.id) AS cnt")
-        lay.addRow("Выводимые столбцы:", self.columns_edit)
+        # Таблица
+        self.table_name_cols = QLineEdit()
+        self.table_name_cols.setPlaceholderText("Имя таблицы (например: users)")
+        f.addRow("Таблица:", self.table_name_cols)
+
+        # ---- Добавить столбец (name, type) ----
+        self.add_col_name = QLineEdit()
+        self.add_col_name.setPlaceholderText("Имя столбца")
+
+        # Тип нового столбца — выпадающий список
+        self.add_col_type = QComboBox()
+        self.add_col_type.addItems([
+            "INTEGER",
+            "BIGINT",
+            "SMALLINT",
+            "SERIAL",
+            "REAL",
+            "DOUBLE PRECISION",
+            "NUMERIC(10,2)",
+            "BOOLEAN",
+            "TEXT",
+            "VARCHAR(100)",
+            "DATE",
+            "TIMESTAMP",
+            "JSONB"
+        ])
+
+        add_row = QHBoxLayout()
+        add_row.addWidget(self.add_col_name)
+        add_row.addWidget(self.add_col_type)
+        add_wrap = QWidget()
+        add_wrap.setLayout(add_row)
+        f.addRow("Добавить столбец (name, type):", add_wrap)
+
+        # ---- Удалить столбец ----
+        self.drop_col = QLineEdit()
+        self.drop_col.setPlaceholderText("Имя столбца")
+
+        self.drop_cascade = QCheckBox("CASCADE")
+
+        drop_row = QHBoxLayout()
+        drop_row.addWidget(self.drop_col)
+        drop_row.addWidget(self.drop_cascade)
+        drop_wrap = QWidget()
+        drop_wrap.setLayout(drop_row)
+        f.addRow("Удалить столбец:", drop_wrap)
+
+        # ---- Переименовать столбец (old → new) ----
+        self.rename_col_old = QLineEdit()
+        self.rename_col_old.setPlaceholderText("старое имя")
+
+        self.rename_col_new = QLineEdit()
+        self.rename_col_new.setPlaceholderText("новое имя")
+
+        ren_row = QHBoxLayout()
+        ren_row.addWidget(self.rename_col_old)
+        ren_row.addWidget(self.rename_col_new)
+        ren_wrap = QWidget()
+        ren_wrap.setLayout(ren_row)
+        f.addRow("Переименовать столбец (old → new):", ren_wrap)
+
+        # ---- NOT NULL для столбца ----
+        self.notnull_col = QLineEdit()
+        self.notnull_col.setPlaceholderText("Имя столбца")
+
+        self.notnull_mode = QComboBox()
+        self.notnull_mode.addItems(["SET NOT NULL", "DROP NOT NULL"])
+
+        nn_row = QHBoxLayout()
+        nn_row.addWidget(self.notnull_col)
+        nn_row.addWidget(self.notnull_mode)
+        nn_wrap = QWidget()
+        nn_wrap.setLayout(nn_row)
+        f.addRow("NOT NULL для столбца:", nn_wrap)
 
         self.tabs.addTab(w, "Столбцы")
 
@@ -913,7 +1042,7 @@ class InsertRowDialog(_BaseModalDialog):
         if t == "date":
             d = QDateEdit()
             d.setCalendarPopup(True)
-            d.setDate(QDate().currentDate())
+            d.setDate(QDate.currentDate())
             return d
         # JSONB и текстовые — multiline
         if "json" in t:
@@ -1033,20 +1162,26 @@ class InsertRowDialog(_BaseModalDialog):
             QMessageBox.warning(self, "Данные", "Не указано ни одного значения.")
             return
 
-        placeholders = ", ".join(["%s"] * len(cols))
-        col_list = ", ".join(cols)
-        q = f'INSERT INTO {self.table_name} ({col_list}) VALUES ({placeholders}) RETURNING 1'
-
-        from database import get_connection, safe_execute
-        conn = get_connection()
         try:
-            safe_execute(conn, q, vals)
-            QMessageBox.information(self, "Готово", "Запись добавлена.")
-            self.accept()
+            from database import get_connection
+            conn = get_connection()
+            try:
+                # Чистый безопасный INSERT без лишней магии обёрток
+                placeholders = ", ".join(["%s"] * len(cols))
+                col_list = ", ".join([f'"{c}"' for c in cols])  # экранируем идентификаторы простыми кавычками
+                q = f'INSERT INTO "{self.table_name}" ({col_list}) VALUES ({placeholders})'
+
+                cur = conn.cursor()
+                cur.execute(q, vals)
+                conn.commit()
+
+                QMessageBox.information(self, "Готово", "Запись добавлена.")
+                self.accept()
+            finally:
+                conn.close()
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"{e}")
-        finally:
-            conn.close()
+            # Любая ошибка БД/валидации — показываем в диалоге, а не падаем процессом
+            QMessageBox.critical(self, "Ошибка вставки", f"{e}")
 
 
 # ---------------- exports ----------------
